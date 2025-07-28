@@ -1,0 +1,8 @@
+paths:
+    basic_math_mj/multiadd/dolma2-tokenizer/: # (2.21MT)
+        - http://olmo-data.org/preprocessed/basic_math_mj/multiadd/dolma2-tokenizer/part-4-00000.npy
+        - http://olmo-data.org/preprocessed/basic_math_mj/multiadd/dolma2-tokenizer/part-5-00000.npy
+        - http://olmo-data.org/preprocessed/basic_math_mj/multiadd/dolma2-tokenizer/part-2-00000.npy
+        - http://olmo-data.org/preprocessed/basic_math_mj/multiadd/dolma2-tokenizer/part-3-00000.npy
+        - http://olmo-data.org/preprocessed/basic_math_mj/multiadd/dolma2-tokenizer/part-0-00000.npy
+        - http://olmo-data.org/preprocessed/basic_math_mj/multiadd/dolma2-tokenizer/part-1-00000.npy
