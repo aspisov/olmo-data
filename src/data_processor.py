@@ -342,7 +342,6 @@ class DataProcessor:
         Args:
             npy_file (Path): Input .npy file.
             part_name (str): Name of the part (original filename).
-            dataset_path (str): Dataset path extracted from URL.
 
         Returns:
             pl.DataFrame | None: DataFrame with part index and dataset path columns, or None if failed.
@@ -355,7 +354,6 @@ class DataProcessor:
                 df = pl.DataFrame({
                     "value": data, 
                     "part": [part_index] * len(data),
-                    "dataset_path": [dataset_path] * len(data)
                 })
                 print(
                     f"  ✅ Converted: {data.shape} → {len(df)} rows (part: {part_index}, path: {dataset_path})"
@@ -854,6 +852,7 @@ def main():
         upload_to_hf=args.upload_hf,
         hf_repo=args.hf_repo,
         skip_existing=not args.no_skip,
+        delete_after_upload=args.delete_after_upload,
     )
     processor.process_all()
 
