@@ -9,3 +9,6 @@ wheels/
 # Virtual environments
 .venv
 .env
+
+processed_data/
+temp_downloads/

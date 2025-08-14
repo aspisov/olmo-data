@@ -31,16 +31,16 @@ class DataProcessor:
 
     # Maximum CSV rows to prevent transfer issues (safe limit under 2^31-1)
     MAX_CSV_ROWS = 2_000_000_000
-    MAX_CSV_BYTES = 40 * 1024**3
+    MAX_CSV_BYTES = 15 * 1024**3
 
     def __init__(
         self,
         config_path: str,
         output_dir: str = "processed_data",
-        upload_to_hf: bool = False,
+        upload_to_hf: bool = True,
         hf_repo: str = "aspisov/dataset",
         skip_existing: bool = True,
-        delete_after_upload: bool = False,
+        delete_after_upload: bool = True,
     ):
         """
         Initialize the data processor.
