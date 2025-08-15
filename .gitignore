@@ -11,4 +11,5 @@ wheels/
 .env
 
 processed_data/
+reconstructed_data/
 temp_downloads/

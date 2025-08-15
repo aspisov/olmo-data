@@ -1,4 +1,4 @@
-file="$1"
+  file="$1"
 
 if [[ -z "$file" ]]; then
   echo "Usage: $0 <filename>"

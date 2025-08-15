@@ -11,7 +11,6 @@ Usage:
 """
 
 import argparse
-import hashlib
 import json
 from pathlib import Path
 from typing import Dict, List
@@ -19,6 +18,9 @@ from typing import Dict, List
 import numpy as np
 import polars as pl
 from tqdm import tqdm
+
+# Local utilities
+from utils import calculate_file_hash
 
 
 class DataReconstructor:
@@ -51,11 +53,7 @@ class DataReconstructor:
 
     def calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA256 hash of a file."""
-        hash_sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_sha256.update(chunk)
-        return hash_sha256.hexdigest()
+        return calculate_file_hash(file_path)
 
     def group_csv_files(self, csv_files: List[Path]) -> Dict[str, List[Path]]:
         """
@@ -114,12 +112,18 @@ class DataReconstructor:
         Reconstruct the original filename from part index.
 
         Args:
-            part_index (str): Part index like "00", "4", "01"
+            part_index (str): Part index. If already a filename like "part-*.npy",
+                it is returned as-is. Otherwise, fall back to legacy pattern.
 
         Returns:
-            str: Full filename like "part-00-00000.npy"
+            str: Filename for the part.
         """
-        return f"part-{part_index}-00000.npy"
+        # If the index already looks like a full filename keep it untouched
+        if part_index.startswith("part-") and part_index.endswith(".npy"):
+            return part_index
+
+        # Compact index case (e.g. "4-00000") → restore original pattern
+        return f"part-{part_index}.npy"
 
     def reconstruct_npy_from_part(
         self, part_df: pl.DataFrame, part_index: str
@@ -138,12 +142,12 @@ class DataReconstructor:
             columns = part_df.columns
 
             if len(columns) == 2 and "value" in columns and "part" in columns:
-                # Standard 1D array format
-                data = part_df["value"].to_numpy().astype(np.uint32)
+                # Standard 1D array format – preserve original dtype
+                data = part_df["value"].to_numpy()
 
             elif "row_idx" in columns and "col_idx" in columns:
                 # 2D array format (not currently used but kept for future)
-                values = part_df["value"].to_numpy().astype(np.uint32)
+                values = part_df["value"].to_numpy()
 
                 if "original_shape" in columns:
                     shape_str = part_df["original_shape"][0]
@@ -178,19 +182,25 @@ class DataReconstructor:
 
             elif "original_shape" in columns:
                 # Higher dimensions (not currently used but kept for future)
-                values = part_df["value"].to_numpy().astype(np.uint32)
+                values = part_df["value"].to_numpy()
                 shape_str = part_df["original_shape"][0]
                 shape = eval(shape_str)
                 data = values.reshape(shape)
 
             elif "value" in columns:
                 # Fallback: use value column
-                data = part_df["value"].to_numpy().astype(np.uint32)
+                data = part_df["value"].to_numpy()
             else:
                 print(f"  ❌ Unknown format for part {part_index}: {columns}")
                 return None
 
-            print(f"  ✅ Reconstructed part {part_index}: {data.shape}")
+            # Ensure dtype matches source (OLMo datasets are uint32)
+            if data.dtype != np.uint32:
+                data = data.astype(np.uint32)
+
+            print(
+                f"  ✅ Reconstructed part {part_index}: {data.shape}, dtype={data.dtype}"
+            )
             return data
 
         except Exception as e:
@@ -244,9 +254,9 @@ class DataReconstructor:
                     # Create output directory
                     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-                    # Save as raw binary
-                    with open(output_path, "wb") as f:
-                        f.write(data.tobytes())
+                    # Save as .npy for faithful restoration and interoperability
+                    # Reason: many pipelines and checks expect real numpy headers
+                    np.save(output_path, data, allow_pickle=False)
 
                     # Calculate hash
                     file_hash = self.calculate_file_hash(output_path)
@@ -320,9 +330,8 @@ class DataReconstructor:
                     # Create output directory
                     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-                    # Save as raw binary
-                    with open(output_path, "wb") as f:
-                        f.write(data.tobytes())
+                    # Save as .npy for faithful restoration and interoperability
+                    np.save(output_path, data, allow_pickle=False)
 
                     # Calculate hash
                     file_hash = self.calculate_file_hash(output_path)
@@ -409,19 +418,19 @@ class DataReconstructor:
         self.save_hashes()
         report = self.create_summary_report()
 
-        print(f"\n🎉 Reconstruction complete!")
+        print("\n🎉 Reconstruction complete!")
         print(f"   ✅ Total files reconstructed: {total_reconstructed}")
-        print(f"   📁 Files organized in: {self.output_dir}")
+        print("   📁 Files organized in:", self.output_dir)
         print(
             f"   📊 Total size: {report['reconstruction_summary']['total_size_gb']} GB"
         )
         print(
             f"   🗂️  Directories created: {report['reconstruction_summary']['directories']}"
         )
-        print(f"   🔐 Hashes saved: file_hashes.json")
+        print("   🔐 Hashes saved: file_hashes.json")
 
         # Show directory structure sample
-        print(f"\n📋 Directory structure sample:")
+        print("\n📋 Directory structure sample:")
         for directory, count in list(report["directory_breakdown"].items())[:5]:
             print(f"   📁 {directory}/ ({count} files)")
 

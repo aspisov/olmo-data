@@ -9,14 +9,14 @@ Usage:
     python src/data_processor.py config.yaml
 """
 
-import hashlib
+import gc
 import os
 import shutil
 import time
 from pathlib import Path
 from typing import Dict, List
 from urllib.parse import urlparse
-import gc
+
 import numpy as np
 import polars as pl
 import requests
@@ -25,13 +25,17 @@ from dotenv import load_dotenv
 from huggingface_hub import HfApi
 from tqdm import tqdm
 
+# Local utilities
+from utils import (
+    calculate_file_hash,
+    extract_dataset_path,
+    extract_part_index,
+    load_binary_data,
+)
+
 
 class DataProcessor:
     """Handles downloading, conversion, and packaging of dataset files."""
-
-    # Maximum CSV rows to prevent transfer issues (safe limit under 2^31-1)
-    MAX_CSV_ROWS = 2_000_000_000
-    MAX_CSV_BYTES = 15 * 1024**3
 
     def __init__(
         self,
@@ -41,6 +45,9 @@ class DataProcessor:
         hf_repo: str = "aspisov/dataset",
         skip_existing: bool = True,
         delete_after_upload: bool = True,
+        max_csv_rows: int = 2_000_000_000,
+        max_csv_bytes: int = 15 * 1024**3,
+        hf_folder: str = "data",
     ):
         """
         Initialize the data processor.
@@ -60,6 +67,10 @@ class DataProcessor:
         self.hf_repo = hf_repo
         self.skip_existing = skip_existing
         self.delete_after_upload = delete_after_upload
+        # Store configurable limits and repo sub-directory
+        self.max_csv_rows = max_csv_rows
+        self.max_csv_bytes = max_csv_bytes
+        self.hf_folder = hf_folder
 
         # Create directories
         self.output_dir.mkdir(exist_ok=True)
@@ -114,7 +125,7 @@ class DataProcessor:
                 print(f"⚠️  Failed to load progress file: {e}")
                 self.progress_data = {}
         else:
-            print(f"📋 No existing progress file found, starting fresh")
+            print("📋 No existing progress file found, starting fresh")
             self.progress_data = {}
 
     def _save_progress(self):
@@ -124,7 +135,7 @@ class DataProcessor:
 
             with open(self.progress_file, "w") as f:
                 json.dump(self.progress_data, f, indent=2)
-            print(f"💾 Saved progress to: {self.progress_file}")
+            # Frequent progress writes are expected; omit console output to keep logs readable.
         except Exception as e:
             print(f"❌ Failed to save progress: {e}")
 
@@ -164,11 +175,12 @@ class DataProcessor:
         self._save_progress()
 
     def _mark_file_processed(self, group_name: str, filename: str):
-         """Record that *filename* is now processed (but don’t touch last_saved_file)."""
-         progress = self._get_group_progress(group_name)
-         if filename not in progress["processed_files"]:
-             progress["processed_files"].append(filename)
-             self._save_progress()
+        """Record that *filename* is now processed (but don’t touch last_saved_file)."""
+        progress = self._get_group_progress(group_name)
+        if filename not in progress["processed_files"]:
+            progress["processed_files"].append(filename)
+            self._save_progress()
+            # No print here ‒ keeping console output minimal.
 
     def _is_file_already_processed(self, group_name: str, filename: str) -> bool:
         """Check if a file has already been processed."""
@@ -220,11 +232,7 @@ class DataProcessor:
 
     def calculate_file_hash(self, file_path: Path) -> str:
         """Calculate SHA256 hash of a file."""
-        hash_sha256 = hashlib.sha256()
-        with open(file_path, "rb") as f:
-            for chunk in iter(lambda: f.read(4096), b""):
-                hash_sha256.update(chunk)
-        return hash_sha256.hexdigest()
+        return calculate_file_hash(file_path)
 
     def download_file(self, url: str, output_path: Path) -> bool:
         """
@@ -238,7 +246,7 @@ class DataProcessor:
             bool: True if successful, False otherwise.
         """
         try:
-            response = requests.get(url, stream=True)
+            response = requests.get(url, stream=True, timeout=(15, 120))
             response.raise_for_status()
 
             total_size = int(response.headers.get("content-length", 0))
@@ -264,75 +272,6 @@ class DataProcessor:
             print(f"❌ Failed to download {url}: {e}")
             return False
 
-    def load_binary_data(self, file_path: Path) -> np.ndarray:
-        """Load binary .npy data, handling different formats."""
-        try:
-            return np.load(file_path)
-        except Exception:
-            try:
-                return np.load(file_path, allow_pickle=True)
-            except Exception:
-                # Try as raw binary data
-                with open(file_path, "rb") as f:
-                    raw_data = f.read()
-                return np.frombuffer(raw_data, dtype="uint32")
-
-    def extract_part_index(self, filename: str) -> str:
-        """
-        Extract part index from filename.
-
-        Args:
-            filename (str): Filename like "part-00-00000.npy" or "part-4-00000.npy"
-
-        Returns:
-            str: Part index like "00" or "4"
-        """
-        name = filename.replace(".npy", "")
-
-        if name.startswith("part-") and "-00000" in name:
-            start = len("part-")
-            end = name.find("-00000")
-            if end > start:
-                return name[start:end]
-
-        return filename
-
-    def extract_dataset_path(self, url: str) -> str:
-        """
-        Extract the dataset path between 'preprocessed' and 'part-' from URL.
-        
-        Args:
-            url (str): URL like 'http://olmo-data.org/preprocessed/tulu_flan/.../part-07-00000.npy'
-            
-        Returns:
-            str: Dataset path like 'tulu_flan/v1-FULLDECON-HARD-TRAIN-60M-shots_all-upweight_1-dialog_false-sep_rulebased/allenai/dolma2-tokenizer/'
-        """
-        try:
-            # Find the 'preprocessed' part
-            preprocessed_idx = url.find('/preprocessed/')
-            if preprocessed_idx == -1:
-                # Fallback to filename if pattern not found
-                return Path(urlparse(url).path).name.replace('.npy', '')
-            
-            # Extract everything after '/preprocessed/'
-            after_preprocessed = url[preprocessed_idx + len('/preprocessed/'):]
-            
-            # Find the last occurrence of 'part-' to split there
-            part_idx = after_preprocessed.rfind('/part-')
-            if part_idx == -1:
-                # If no 'part-' found, use the whole path
-                return after_preprocessed.rstrip('/')
-            
-            # Extract path up to 'part-'
-            dataset_path = after_preprocessed[:part_idx + 1]  # Include trailing slash
-            
-            return dataset_path
-            
-        except Exception as e:
-            print(f"⚠️  Failed to extract dataset path from {url}: {e}")
-            # Fallback to filename
-            return Path(urlparse(url).path).name.replace('.npy', '')
-
     def convert_npy_to_dataframe(
         self, npy_file: Path, part_name: str, dataset_path: str = ""
     ) -> pl.DataFrame | None:
@@ -347,14 +286,16 @@ class DataProcessor:
             pl.DataFrame | None: DataFrame with part index and dataset path columns, or None if failed.
         """
         try:
-            data = self.load_binary_data(npy_file)
-            part_index = self.extract_part_index(part_name)
+            data = load_binary_data(npy_file)
+            part_index = extract_part_index(part_name)
 
             if data.ndim == 1:
-                df = pl.DataFrame({
-                    "value": data, 
-                    "part": [part_index] * len(data),
-                })
+                df = pl.DataFrame({"value": data})
+                df = df.with_columns(
+                    [
+                        pl.lit(part_index).alias("part"),
+                    ]
+                )
                 print(
                     f"  ✅ Converted: {data.shape} → {len(df)} rows (part: {part_index}, path: {dataset_path})"
                 )
@@ -387,7 +328,7 @@ class DataProcessor:
         total_rows = len(combined_df)
         saved_files = []
 
-        if total_rows <= self.MAX_CSV_ROWS:
+        if total_rows <= self.max_csv_rows:
             # Single file - no chunking needed
             combined_df.write_csv(base_csv_path)
             saved_files.append(base_csv_path)
@@ -395,15 +336,15 @@ class DataProcessor:
         else:
             # Split into chunks
             num_chunks = (
-                total_rows + self.MAX_CSV_ROWS - 1
-            ) // self.MAX_CSV_ROWS  # Ceiling division
+                total_rows + self.max_csv_rows - 1
+            ) // self.max_csv_rows  # Ceiling division
             print(
                 f"   🔀 Splitting into {num_chunks} chunks (total rows: {total_rows:,})"
             )
 
             for chunk_idx in range(num_chunks):
-                start_idx = chunk_idx * self.MAX_CSV_ROWS
-                end_idx = min((chunk_idx + 1) * self.MAX_CSV_ROWS, total_rows)
+                start_idx = chunk_idx * self.max_csv_rows
+                end_idx = min((chunk_idx + 1) * self.max_csv_rows, total_rows)
 
                 chunk_df = combined_df.slice(start_idx, end_idx - start_idx)
 
@@ -557,6 +498,9 @@ class DataProcessor:
         # Resume chunk state from progress
         current_chunk_data: List[pl.DataFrame] = []
         current_chunk_files: List[str] = []  # Track files in current chunk
+        current_chunk_files_completed: List[
+            str
+        ] = []  # Files fully processed, to mark on save
         current_chunk_rows = progress.get("current_chunk_rows", 0)
         current_chunk_bytes = progress.get("current_chunk_bytes", 0)
         chunk_index = progress.get("current_chunk_index", 0)
@@ -575,6 +519,7 @@ class DataProcessor:
             nonlocal \
                 current_chunk_data, \
                 current_chunk_files, \
+                current_chunk_files_completed, \
                 current_chunk_rows, \
                 chunk_index, \
                 saved_files
@@ -599,15 +544,17 @@ class DataProcessor:
                 f"   💾 Saved chunk {chunk_index + 1}: {chunk_path.name} ({len(chunk_df):,} rows)"
             )
 
-            # ONLY NOW mark files as processed (after successful save)
-            for filename in current_chunk_files:
+            # ONLY NOW mark completed files as processed (after successful save)
+            for filename in current_chunk_files_completed:
                 self._mark_file_processed(group_name, filename)
 
-            if current_chunk_files:
+            if current_chunk_files_completed:
                 self._update_group_progress(
-                    group_name, last_saved_file=current_chunk_files[-1]
+                    group_name, last_saved_file=current_chunk_files_completed[-1]
                 )
-                print(f"     ✅ Marked {len(current_chunk_files)} files as processed")
+                print(
+                    f"     ✅ Marked {len(current_chunk_files_completed)} files as processed"
+                )
 
             # Update progress
             chunks_saved = [f.name for f in saved_files]
@@ -628,8 +575,10 @@ class DataProcessor:
             # Reset chunk buffer
             current_chunk_data = []
             current_chunk_files = []  # Reset files list too
+            current_chunk_files_completed = []
             current_chunk_rows = 0
-            current_chunk_bytes = 0
+            # Reset bytes counter
+            current_chunk_bytes = 0  # noqa: F841 (tracked only for progress file)
             chunk_index += 1
 
         try:
@@ -640,53 +589,89 @@ class DataProcessor:
 
                 try:
                     # Download with retry
-                    while not self.download_file(url, temp_npy):
-                        print(f"  ❌ Failed to download {url}, retrying...")
-                        time.sleep(1)
+                    download_ok = False
+                    for attempt in range(5):
+                        if self.download_file(url, temp_npy):
+                            download_ok = True
+                            break
+                        print(
+                            f"  ❌ Failed to download {url} (attempt {attempt + 1}/5), retrying..."
+                        )
+                        time.sleep(min(2**attempt, 30))
+                    if not download_ok:
+                        raise RuntimeError("Exceeded max download retries")
 
                     # Calculate hash and store with extracted dataset path
                     file_hash = self.calculate_file_hash(temp_npy)
-                    dataset_path = self.extract_dataset_path(url)
+                    dataset_path = extract_dataset_path(url)
                     self.file_hashes[f"{dataset_path}{filename}"] = file_hash
 
-                    # Convert to DataFrame with dataset path
-                    df = self.convert_npy_to_dataframe(temp_npy, filename, dataset_path)
-                    if df is not None:
-                        df_rows = len(df)
-                        df_bytes = df.estimated_size()
+                    # Load memory-mapped array and stream in slices to bound memory
+                    data = load_binary_data(temp_npy)
+                    part_index = extract_part_index(filename)
 
-                        # Check if adding this DataFrame would exceed chunk limit
-                        if ((
-                            current_chunk_rows + df_rows > self.MAX_CSV_ROWS or current_chunk_bytes + df_bytes > self.MAX_CSV_BYTES
-                        ) and current_chunk_data):
-                            # Save current chunk before adding new data
+                    SLICE_SIZE = self.max_csv_rows
+                    total_rows_this_file = 0
+
+                    for start in range(0, int(data.shape[0]), SLICE_SIZE):
+                        end = min(start + SLICE_SIZE, int(data.shape[0]))
+                        arr_view = np.asarray(data[start:end])
+
+                        # Build small DataFrame and annotate part as a scalar
+                        df = pl.DataFrame({"value": arr_view})
+                        df = df.with_columns(pl.lit(part_index).alias("part"))
+
+                        df_rows = len(df)
+                        # Use a coarse multiplier so that the estimated byte
+                        # count more closely matches the eventual on-disk CSV
+                        # size (Arrow → text inflation).
+                        df_bytes = int(
+                            df_rows * 24
+                        )  # Changed from df.estimated_size() * self.CSV_SIZE_MULTIPLIER
+
+                        # Pre-add limit check: flush if needed
+                        if (
+                            (current_chunk_rows + df_rows > self.max_csv_rows)
+                            or (current_chunk_bytes + df_bytes > self.max_csv_bytes)
+                        ) and current_chunk_data:
                             save_current_chunk()
 
-                        # Add to current chunk
+                        # Add to current chunk buffer
                         current_chunk_data.append(df)
-                        current_chunk_files.append(filename)  # Track file in chunk
+                        if filename not in current_chunk_files:
+                            current_chunk_files.append(filename)
                         current_chunk_rows += df_rows
                         current_chunk_bytes += df_bytes
                         total_rows_processed += df_rows
-                        total_parts_processed += 1
+                        total_rows_this_file += df_rows
 
-                        print(f"  ✅ Processed: {filename} ({df_rows:,} rows)")
-                        print(
-                            f"     Current chunk: {current_chunk_rows:,}/{self.MAX_CSV_ROWS:,} rows"
-                            f"({current_chunk_bytes / 1024**3:.1f}/{self.MAX_CSV_BYTES / 1024**3:.0f} GiB)"
-                        )
-                        print(f"     Files in chunk: {len(current_chunk_files)}")
+                        # Post-add limit check: flush immediately if limits reached
+                        if (
+                            current_chunk_rows >= self.max_csv_rows
+                            or current_chunk_bytes >= self.max_csv_bytes
+                        ):
+                            save_current_chunk()
 
-                        # Update progress immediately
+                        # Update progress counters
                         self._update_group_progress(
                             group_name,
                             current_chunk_rows=current_chunk_rows,
                             current_chunk_bytes=current_chunk_bytes,
                             total_rows_processed=total_rows_processed,
-                            total_parts_processed=total_parts_processed,
                         )
 
-                    # NOTE: File marked as processed only when chunk is saved!
+                    # Finished processing this file fully
+                    total_parts_processed += 1
+                    current_chunk_files_completed.append(filename)
+
+                    print(f"  ✅ Processed: {filename} ({total_rows_this_file:,} rows)")
+                    print(
+                        f"     Current chunk: {current_chunk_rows:,}/{self.max_csv_rows:,} rows"
+                        f"({current_chunk_bytes / 1024**2:.1f}/{self.max_csv_bytes / 1024**2:.0f} MiB)"
+                    )
+                    print(
+                        f"     Files staged for mark-complete: {len(current_chunk_files_completed)}"
+                    )
 
                     # Cleanup
                     temp_npy.unlink()
@@ -738,10 +723,10 @@ class DataProcessor:
                 return
 
             # Upload to processed_data folder in the repository
-            repo_path = f"general/{file_path.name}"
-            
+            repo_path = f"{self.hf_folder.rstrip('/')}/{file_path.name}"
+
             print(
-                f"📤 Uploading {file_path.name} ({file_size / (1024 * 1024):.1f} MB) to data/ in HuggingFace..."
+                f"📤 Uploading {file_path.name} ({file_size / (1024 * 1024):.1f} MB) to {self.hf_folder}/ in HuggingFace..."
             )
 
             self.hf_api.upload_file(
@@ -839,6 +824,23 @@ def main():
         action="store_true",
         help="Delete local files after successful upload to HuggingFace",
     )
+    parser.add_argument(
+        "--max-lines",
+        type=int,
+        default=2_000_000_000,
+        help="Maximum rows per CSV chunk",
+    )
+    parser.add_argument(
+        "--max-mb",
+        type=float,
+        default=15360.0,
+        help="Maximum MiB per CSV chunk (will be converted to bytes)",
+    )
+    parser.add_argument(
+        "--hf-folder",
+        default="data",
+        help="Subdirectory inside the HuggingFace repo to upload files to",
+    )
 
     args = parser.parse_args()
 
@@ -853,6 +855,9 @@ def main():
         hf_repo=args.hf_repo,
         skip_existing=not args.no_skip,
         delete_after_upload=args.delete_after_upload,
+        max_csv_rows=args.max_lines,
+        max_csv_bytes=int(args.max_mb * 1024**2),
+        hf_folder=args.hf_folder,
     )
     processor.process_all()
 
