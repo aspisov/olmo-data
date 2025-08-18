@@ -213,20 +213,21 @@ class DataReconstructor:
 
     def process_csv_file(self, csv_path: Path) -> int:
         """
-        Process a single CSV file and reconstruct all contained parts.
-
-        Args:
-            csv_path (Path): Path to CSV file.
-
-        Returns:
-            int: Number of files successfully reconstructed.
+        Process a single CSV file and reconstruct all contained parts using
+        a lazy streaming approach so that only one part is materialised in
+        memory at any given time.
         """
         reconstructed_count = 0
         print(f"\n📦 Processing: {csv_path.name}")
 
         try:
-            df = pl.read_csv(csv_path, schema_overrides={"part": pl.Utf8})
-            unique_parts = df["part"].unique().to_list()
+            # Lazy scan to avoid loading the full file
+            scan = pl.scan_csv(csv_path)
+
+            # Collect distinct part indices (small – just one column)
+            unique_parts = (
+                scan.select(pl.col("part")).unique().collect()["part"].to_list()
+            )
             print(f"   Found {len(unique_parts)} parts")
 
             group_path = self.extract_group_path_from_filename(csv_path.name)
@@ -243,22 +244,20 @@ class DataReconstructor:
                         print(f"  ⏭️  Skipping existing: {filename}")
                         continue
 
-                    # Filter data for this part index
-                    part_df = df.filter(pl.col("part") == part_index)
+                    # Materialise data only for this part
+                    part_df = (
+                        scan.filter(pl.col("part") == part_index)
+                        .select(["value", "part"])  # keep only needed cols
+                        .collect()
+                    )
 
-                    # Reconstruct the numpy array
                     data = self.reconstruct_npy_from_part(part_df, part_index)
                     if data is None:
                         continue
 
-                    # Create output directory
                     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    # Save as .npy for faithful restoration and interoperability
-                    # Reason: many pipelines and checks expect real numpy headers
                     np.save(output_path, data, allow_pickle=False)
 
-                    # Calculate hash
                     file_hash = self.calculate_file_hash(output_path)
                     rel_path = output_path.relative_to(self.output_dir)
                     self.reconstructed_hashes[rel_path.as_posix()] = file_hash
@@ -276,35 +275,27 @@ class DataReconstructor:
 
     def process_csv_group(self, csv_files: List[Path], group_name: str) -> int:
         """
-        Process a group of CSV files (potentially chunked) for reconstruction.
-
-        Args:
-            csv_files (List[Path]): List of CSV files in the group.
-            group_name (str): Name of the dataset group.
-
-        Returns:
-            int: Number of files successfully reconstructed.
+        Process a group of CSV chunk files lazily, reconstructing one part at a
+        time to keep memory usage bounded.
         """
         reconstructed_count = 0
         print(f"\n📦 Processing group: {group_name}")
         print(f"   Files in group: {[f.name for f in csv_files]}")
 
         try:
-            # Read and combine all CSV files in the group
-            all_dfs = []
-            for csv_path in csv_files:
-                df = pl.read_csv(csv_path, schema_overrides={"part": pl.Utf8})
-                all_dfs.append(df)
-                print(f"   📖 Loaded: {csv_path.name} ({len(df):,} rows)")
+            # Concatenate all chunk scans lazily
+            scans = [pl.scan_csv(p) for p in csv_files]
+            combined_scan = pl.concat(scans)
 
-            # Combine all chunks back together
-            combined_df = pl.concat(all_dfs, how="vertical")
-            print(f"   🔗 Combined total: {len(combined_df):,} rows")
-
-            unique_parts = combined_df["part"].unique().to_list()
+            # Determine unique parts without loading full data
+            unique_parts = (
+                combined_scan.select(pl.col("part"))
+                .unique()
+                .collect()["part"]
+                .to_list()
+            )
             print(f"   Found {len(unique_parts)} parts")
 
-            # Extract group path from the first file (they should all be the same)
             group_path = self.extract_group_path_from_filename(csv_files[0].name)
 
             for part_index in tqdm(unique_parts, desc="Reconstructing parts"):
@@ -312,28 +303,26 @@ class DataReconstructor:
                     filename = self.reconstruct_filename_from_index(part_index)
                     output_path = self.output_dir / group_path / filename
 
-                    # Skip if already exists
                     if self.skip_existing and self.is_file_already_reconstructed(
                         output_path
                     ):
                         print(f"  ⏭️  Skipping existing: {filename}")
                         continue
 
-                    # Filter data for this part index from combined dataframe
-                    part_df = combined_df.filter(pl.col("part") == part_index)
+                    # Materialise only rows for this part across all chunks
+                    part_df = (
+                        combined_scan.filter(pl.col("part") == part_index)
+                        .select(["value", "part"])
+                        .collect()
+                    )
 
-                    # Reconstruct the numpy array
                     data = self.reconstruct_npy_from_part(part_df, part_index)
                     if data is None:
                         continue
 
-                    # Create output directory
                     output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    # Save as .npy for faithful restoration and interoperability
                     np.save(output_path, data, allow_pickle=False)
 
-                    # Calculate hash
                     file_hash = self.calculate_file_hash(output_path)
                     rel_path = output_path.relative_to(self.output_dir)
                     self.reconstructed_hashes[rel_path.as_posix()] = file_hash

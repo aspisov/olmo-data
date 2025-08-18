@@ -1,18 +1,45 @@
 {
   "basic_math_mj/multiadd/dolma2-tokenizer/": {
-    "processed_files": [],
-    "current_chunk_index": 4,
+    "processed_files": [
+      "part-0-00000.npy",
+      "part-4-00000.npy",
+      "part-5-00000.npy",
+      "part-2-00000.npy",
+      "part-3-00000.npy"
+    ],
+    "current_chunk_index": 25,
     "current_chunk_rows": 0,
-    "current_chunk_bytes": 8721936,
-    "total_rows_processed": 363414,
+    "current_chunk_bytes": 52973208,
+    "total_rows_processed": 2207217,
     "total_parts_processed": 0,
     "chunks_saved": [
       "basic_math_mj__multiadd__dolma2-tokenizer.csv",
       "basic_math_mj__multiadd__dolma2-tokenizer_chunk_1.csv",
       "basic_math_mj__multiadd__dolma2-tokenizer_chunk_2.csv",
-      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_3.csv"
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_3.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_4.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_5.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_6.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_7.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_8.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_9.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_10.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_11.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_12.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_13.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_14.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_15.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_16.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_17.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_18.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_19.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_20.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_21.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_22.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_23.csv",
+      "basic_math_mj__multiadd__dolma2-tokenizer_chunk_24.csv"
     ],
-    "last_saved_file": null,
+    "last_saved_file": "part-3-00000.npy",
     "status": "complete"
   }
 }
