@@ -12,6 +12,7 @@ Usage:
 
 import argparse
 import json
+import re
 from pathlib import Path
 from typing import Dict, List
 
@@ -30,7 +31,6 @@ class DataReconstructor:
         self,
         input_dir: str = "processed_data",
         output_dir: str = "reconstructed_data",
-        skip_existing: bool = True,
     ):
         """
         Initialize the data reconstructor.
@@ -38,11 +38,9 @@ class DataReconstructor:
         Args:
             input_dir (str): Directory containing processed CSV files.
             output_dir (str): Directory to recreate original structure.
-            skip_existing (bool): Whether to skip already reconstructed files.
         """
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
-        self.skip_existing = skip_existing
 
         # Create directories
         self.output_dir.mkdir(exist_ok=True)
@@ -101,6 +99,7 @@ class DataReconstructor:
         """
         base_name = csv_filename.replace(".csv", "")
         decoded_path = base_name.replace("__", "/")
+        decoded_path = re.sub(r"_chunk_\d+", "", decoded_path)
 
         if not decoded_path.endswith("/"):
             decoded_path += "/"
@@ -118,12 +117,10 @@ class DataReconstructor:
         Returns:
             str: Filename for the part.
         """
-        # If the index already looks like a full filename keep it untouched
-        if part_index.startswith("part-") and part_index.endswith(".npy"):
-            return part_index
+        if "-" in part_index:
+            return f"part-{part_index}.npy"
 
-        # Compact index case (e.g. "4-00000") → restore original pattern
-        return f"part-{part_index}.npy"
+        return f"part-{part_index}-00000.npy"
 
     def reconstruct_npy_from_part(
         self, part_df: pl.DataFrame, part_index: str
@@ -207,6 +204,35 @@ class DataReconstructor:
             print(f"  ❌ Failed to reconstruct part {part_index}: {e}")
             return None
 
+    def write_or_append_part(self, output_path: Path, data: np.ndarray) -> None:
+        """Write new part or append to existing .npy file."""
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if output_path.exists():
+            try:
+                existing = np.load(output_path, allow_pickle=False)
+
+                if existing.dtype != data.dtype:
+                    data = data.astype(existing.dtype)
+
+                if existing.ndim != data.ndim:
+                    raise ValueError(
+                        f"Shape rank mismatch: existing {existing.shape}, new {data.shape}"
+                    )
+
+                combined = np.concatenate([existing, data], axis=0)
+                np.save(output_path, combined, allow_pickle=False)
+                print(
+                    f"  ➕ Appended: {output_path.name} {existing.shape} + {data.shape} -> {combined.shape}"
+                )
+            except Exception as e:
+                print(
+                    f"  ⚠️  Append failed ({e}); writing fresh file: {output_path.name}"
+                )
+                np.save(output_path, data, allow_pickle=False)
+        else:
+            np.save(output_path, data, allow_pickle=False)
+
     def is_file_already_reconstructed(self, output_path: Path) -> bool:
         """Check if a file has already been reconstructed."""
         return output_path.exists()
@@ -223,6 +249,8 @@ class DataReconstructor:
         try:
             # Lazy scan to avoid loading the full file
             scan = pl.scan_csv(csv_path)
+            # Ensure `part` is treated as string
+            scan = scan.with_columns(pl.col("part").cast(pl.Utf8))
 
             # Collect distinct part indices (small – just one column)
             unique_parts = (
@@ -237,13 +265,6 @@ class DataReconstructor:
                     filename = self.reconstruct_filename_from_index(part_index)
                     output_path = self.output_dir / group_path / filename
 
-                    # Skip if already exists
-                    if self.skip_existing and self.is_file_already_reconstructed(
-                        output_path
-                    ):
-                        print(f"  ⏭️  Skipping existing: {filename}")
-                        continue
-
                     # Materialise data only for this part
                     part_df = (
                         scan.filter(pl.col("part") == part_index)
@@ -255,8 +276,7 @@ class DataReconstructor:
                     if data is None:
                         continue
 
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    np.save(output_path, data, allow_pickle=False)
+                    self.write_or_append_part(output_path, data)
 
                     file_hash = self.calculate_file_hash(output_path)
                     rel_path = output_path.relative_to(self.output_dir)
@@ -286,6 +306,8 @@ class DataReconstructor:
             # Concatenate all chunk scans lazily
             scans = [pl.scan_csv(p) for p in csv_files]
             combined_scan = pl.concat(scans)
+            # Ensure `part` is treated as string
+            combined_scan = combined_scan.with_columns(pl.col("part").cast(pl.Utf8))
 
             # Determine unique parts without loading full data
             unique_parts = (
@@ -303,12 +325,6 @@ class DataReconstructor:
                     filename = self.reconstruct_filename_from_index(part_index)
                     output_path = self.output_dir / group_path / filename
 
-                    if self.skip_existing and self.is_file_already_reconstructed(
-                        output_path
-                    ):
-                        print(f"  ⏭️  Skipping existing: {filename}")
-                        continue
-
                     # Materialise only rows for this part across all chunks
                     part_df = (
                         combined_scan.filter(pl.col("part") == part_index)
@@ -320,8 +336,7 @@ class DataReconstructor:
                     if data is None:
                         continue
 
-                    output_path.parent.mkdir(parents=True, exist_ok=True)
-                    np.save(output_path, data, allow_pickle=False)
+                    self.write_or_append_part(output_path, data)
 
                     file_hash = self.calculate_file_hash(output_path)
                     rel_path = output_path.relative_to(self.output_dir)
@@ -386,8 +401,7 @@ class DataReconstructor:
         print(f"📁 Input directory: {self.input_dir}")
         print(f"📁 Output directory: {self.output_dir}")
 
-        if self.skip_existing:
-            print("⏭️  Skip existing: enabled")
+        print("➕ Append mode: existing parts will be extended if present")
 
         csv_files = list(self.input_dir.glob("*.csv"))
         if not csv_files:
@@ -452,9 +466,7 @@ def main():
         print(f"❌ Input directory not found: {args.input_dir}")
         return 1
 
-    reconstructor = DataReconstructor(
-        args.input_dir, args.output_dir, skip_existing=not args.no_skip
-    )
+    reconstructor = DataReconstructor(args.input_dir, args.output_dir)
     reconstructor.reconstruct_all()
 
     return 0
