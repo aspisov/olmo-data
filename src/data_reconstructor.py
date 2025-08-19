@@ -266,11 +266,7 @@ class DataReconstructor:
                     output_path = self.output_dir / group_path / filename
 
                     # Materialise data only for this part
-                    part_df = (
-                        scan.filter(pl.col("part") == part_index)
-                        .select(["value", "part"])  # keep only needed cols
-                        .collect()
-                    )
+                    part_df = scan.filter(pl.col("part") == part_index).collect()
 
                     data = self.reconstruct_npy_from_part(part_df, part_index)
                     if data is None:
@@ -290,66 +286,6 @@ class DataReconstructor:
 
         except Exception as e:
             print(f"❌ Failed to process CSV file {csv_path}: {e}")
-
-        return reconstructed_count
-
-    def process_csv_group(self, csv_files: List[Path], group_name: str) -> int:
-        """
-        Process a group of CSV chunk files lazily, reconstructing one part at a
-        time to keep memory usage bounded.
-        """
-        reconstructed_count = 0
-        print(f"\n📦 Processing group: {group_name}")
-        print(f"   Files in group: {[f.name for f in csv_files]}")
-
-        try:
-            # Concatenate all chunk scans lazily
-            scans = [pl.scan_csv(p) for p in csv_files]
-            combined_scan = pl.concat(scans)
-            # Ensure `part` is treated as string
-            combined_scan = combined_scan.with_columns(pl.col("part").cast(pl.Utf8))
-
-            # Determine unique parts without loading full data
-            unique_parts = (
-                combined_scan.select(pl.col("part"))
-                .unique()
-                .collect()["part"]
-                .to_list()
-            )
-            print(f"   Found {len(unique_parts)} parts")
-
-            group_path = self.extract_group_path_from_filename(csv_files[0].name)
-
-            for part_index in tqdm(unique_parts, desc="Reconstructing parts"):
-                try:
-                    filename = self.reconstruct_filename_from_index(part_index)
-                    output_path = self.output_dir / group_path / filename
-
-                    # Materialise only rows for this part across all chunks
-                    part_df = (
-                        combined_scan.filter(pl.col("part") == part_index)
-                        .select(["value", "part"])
-                        .collect()
-                    )
-
-                    data = self.reconstruct_npy_from_part(part_df, part_index)
-                    if data is None:
-                        continue
-
-                    self.write_or_append_part(output_path, data)
-
-                    file_hash = self.calculate_file_hash(output_path)
-                    rel_path = output_path.relative_to(self.output_dir)
-                    self.reconstructed_hashes[rel_path.as_posix()] = file_hash
-
-                    reconstructed_count += 1
-                    self.file_count += 1
-
-                except Exception as e:
-                    print(f"  ❌ Failed to process part {part_index}: {e}")
-
-        except Exception as e:
-            print(f"❌ Failed to process CSV group {group_name}: {e}")
 
         return reconstructed_count
 
@@ -414,9 +350,14 @@ class DataReconstructor:
 
         total_reconstructed = 0
         for group_name, group_files in file_groups.items():
-            count = self.process_csv_group(group_files, group_name)
-            total_reconstructed += count
-            print(f"   ✅ Reconstructed: {count} files")
+            group_count = 0
+            print(f"\n📂 Processing group: {group_name} ({len(group_files)} chunks)")
+            for csv_path in group_files:
+                group_count += self.process_csv_file(csv_path)
+            total_reconstructed += group_count
+            print(
+                f"   ✅ Reconstructed group {group_name}: {group_count} parts from {len(group_files)} chunks"
+            )
 
         self.save_hashes()
         report = self.create_summary_report()
