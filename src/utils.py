@@ -23,17 +23,6 @@ def calculate_file_hash(file_path: Path) -> str:
     Returns:
         str: Hex-encoded SHA256 hash.
     """
-    # Special-case .npy files so that we hash only the raw array bytes and ignore the
-    # header.  Headers can legitimately differ (e.g., NumPy v1.0 vs v2.0) even when
-    # the underlying data are identical; comparing array bytes is the robust check.
-    if file_path.suffix == ".npy":
-        try:
-            arr = np.load(file_path, mmap_mode="r")
-            return hashlib.sha256(arr.tobytes()).hexdigest()
-        except Exception:
-            # Fallback: hash the whole file if anything goes wrong
-            pass
-
     hash_sha256 = hashlib.sha256()
     with open(file_path, "rb") as f:
         for chunk in iter(lambda: f.read(4096), b""):
@@ -52,14 +41,9 @@ def load_binary_data(file_path: Path) -> np.ndarray:
         np.ndarray: Memory-mapped array when possible.
     """
     try:
-        return np.load(file_path, mmap_mode="r")
+        return np.memmap(file_path, mode="r", dtype=np.uint32)
     except Exception:
-        try:
-            return np.load(file_path, allow_pickle=True)
-        except Exception:
-            with open(file_path, "rb") as f:
-                raw_data = f.read()
-            return np.frombuffer(raw_data, dtype="uint32")
+        raise ValueError(f"Failed to load binary data from {file_path}")
 
 
 def extract_part_index(filename: str) -> str:
@@ -73,11 +57,11 @@ def extract_part_index(filename: str) -> str:
         str: Part index string (usually the full file name).
     """
     name = Path(filename).name
-    # Expect pattern "part-<index>.npy". Strip prefix/suffix for compact storage.
+
     if name.startswith("part-") and name.endswith(".npy"):
         # Remove "part-" prefix and ".npy" suffix → "<index>" (e.g. "4-00000")
         return name[len("part-") : -len(".npy")]
-    return name
+    raise ValueError(f"Invalid filename: {filename}")
 
 
 def extract_dataset_path(url: str) -> str:

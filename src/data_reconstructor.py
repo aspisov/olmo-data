@@ -210,7 +210,7 @@ class DataReconstructor:
 
         if output_path.exists():
             try:
-                existing = np.load(output_path, allow_pickle=False)
+                existing = np.memmap(output_path, mode="r", dtype=np.uint32)
 
                 if existing.dtype != data.dtype:
                     data = data.astype(existing.dtype)
@@ -221,17 +221,16 @@ class DataReconstructor:
                     )
 
                 combined = np.concatenate([existing, data], axis=0)
-                np.save(output_path, combined, allow_pickle=False)
+                with open(output_path, "wb") as f:
+                    f.write(combined.tobytes())
                 print(
                     f"  ➕ Appended: {output_path.name} {existing.shape} + {data.shape} -> {combined.shape}"
                 )
             except Exception as e:
-                print(
-                    f"  ⚠️  Append failed ({e}); writing fresh file: {output_path.name}"
-                )
-                np.save(output_path, data, allow_pickle=False)
+                raise ValueError(f"Failed to append to {output_path}: {e}")
         else:
-            np.save(output_path, data, allow_pickle=False)
+            with open(output_path, "wb") as f:
+                f.write(data.tobytes())
 
     def is_file_already_reconstructed(self, output_path: Path) -> bool:
         """Check if a file has already been reconstructed."""
